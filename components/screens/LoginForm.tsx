@@ -1,0 +1,221 @@
+'use client';
+
+import { useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowRight, KeyRound, User } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
+import { TextField } from '@/components/ui/Field';
+import { Logo } from '@/components/brand/Logo';
+import { useToast } from '@/components/ui/Toast';
+import { durations, easeOutExpo, springSnappy, stepVariants } from '@/lib/motion';
+import { cn } from '@/lib/utils';
+
+type Mode = 'account' | 'code';
+
+/**
+ * Вход.
+ *
+ * Две двери в одном экране: студент и HR-менеджер входят по паролю,
+ * работодатель — по коду из CRM, потому что регистрации у него нет.
+ * Разделять это на две страницы значило бы заставить человека сначала
+ * угадать, кто он в этой системе.
+ */
+export function LoginForm({ demoHint }: { demoHint?: { student: string; admin: string; code: string } }) {
+  const router = useRouter();
+  const params = useSearchParams();
+  const toast = useToast();
+
+  const [mode, setMode] = useState<Mode>(params.get('role') === 'employer' ? 'code' : 'account');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setPending(true);
+    setError(null);
+
+    const endpoint = mode === 'account' ? '/api/auth/login' : '/api/auth/employer';
+    const payload = mode === 'account' ? { email, password } : { code };
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = (await response.json()) as { redirectTo?: string; error?: string };
+
+      if (!response.ok) {
+        setError(data.error ?? 'Не удалось войти');
+        return;
+      }
+
+      // «next» из middleware: вернуть человека туда, куда он шёл
+      const next = params.get('next');
+      router.push(next && next.startsWith('/') ? next : (data.redirectTo ?? '/'));
+      router.refresh();
+    } catch {
+      toast.error('Сеть недоступна', 'Проверьте соединение и попробуйте ещё раз');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center px-5 py-16">
+      <motion.div
+        initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
+        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+        transition={{ duration: durations.slow, ease: easeOutExpo }}
+        className="w-full max-w-[26rem]"
+      >
+        <div className="mb-9 flex justify-center">
+          <Logo />
+        </div>
+
+        {/* Пришли с /logout?reason=stale: сессия ссылалась на аккаунт,
+            которого больше нет. Без пояснения человек видит форму входа
+            без причины и решает, что его выкинуло просто так. */}
+        {params.get('reason') === 'stale' && (
+          <div className="mb-4 rounded-2xl border border-warn/35 bg-warn/[0.08] p-4 text-[13px] leading-relaxed text-warn">
+            Сессия устарела — данные аккаунта изменились на сервере. Войдите заново.
+          </div>
+        )}
+
+        <div className="glass rounded-3xl p-6 sm:p-8">
+          <div className="flex rounded-2xl border border-[var(--hairline)] bg-graphite-950/60 p-1">
+            <ModeTab active={mode === 'account'} onClick={() => setMode('account')} icon={<User className="size-3.5" />}>
+              Студент и HR
+            </ModeTab>
+            <ModeTab active={mode === 'code'} onClick={() => setMode('code')} icon={<KeyRound className="size-3.5" />}>
+              Работодатель
+            </ModeTab>
+          </div>
+
+          <form onSubmit={submit} className="mt-6">
+            <AnimatePresence mode="wait" initial={false} custom={mode === 'code' ? 1 : -1}>
+              <motion.div
+                key={mode}
+                custom={mode === 'code' ? 1 : -1}
+                variants={stepVariants}
+                initial="hidden"
+                animate="show"
+                exit="exit"
+                className="space-y-3"
+              >
+                {mode === 'account' ? (
+                  <>
+                    <TextField
+                      label="Почта"
+                      type="email"
+                      autoComplete="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                    <TextField
+                      label="Пароль"
+                      type="password"
+                      autoComplete="current-password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </>
+                ) : (
+                  <TextField
+                    label="Код доступа из CRM"
+                    autoComplete="one-time-code"
+                    required
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                    hint="Код выдаёт ваш аккаунт-менеджер в Fattakhov HR Agency"
+                    className="[&_input]:tracking-[0.18em]"
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {error && (
+                <motion.p
+                  initial={{ opacity: 0, height: 0, y: -6 }}
+                  animate={{ opacity: 1, height: 'auto', y: 0 }}
+                  exit={{ opacity: 0, height: 0, y: -6 }}
+                  transition={{ duration: durations.fast, ease: easeOutExpo }}
+                  className="overflow-hidden pt-3 text-[13px] leading-snug text-danger"
+                >
+                  {error}
+                </motion.p>
+              )}
+            </AnimatePresence>
+
+            <Button type="submit" size="lg" loading={pending} className="mt-5 w-full" iconRight={<ArrowRight />}>
+              Войти
+            </Button>
+          </form>
+
+          {demoHint && (
+            <div className="mt-6 space-y-1.5 rounded-2xl border border-[var(--hairline)] bg-graphite-950/50 p-4 text-[12px] leading-relaxed text-paper-faint">
+              <p className="text-paper/70">Демо-доступы</p>
+              <p>
+                Студент: <code className="text-accent-200">{demoHint.student}</code>
+              </p>
+              <p>
+                HR-менеджер: <code className="text-accent-200">{demoHint.admin}</code>
+              </p>
+              <p>
+                Работодатель: <code className="text-accent-200">{demoHint.code}</code>
+              </p>
+            </div>
+          )}
+        </div>
+
+        <p className="mt-6 text-center text-[13px] text-paper-faint">
+          Ещё нет профиля?{' '}
+          <Link href="/register" className="text-paper underline-offset-4 transition-colors hover:underline">
+            Зарегистрироваться
+          </Link>
+        </p>
+      </motion.div>
+    </div>
+  );
+}
+
+function ModeTab({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'relative flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-colors duration-300',
+        active ? 'text-paper' : 'text-paper/50 hover:text-paper/80',
+      )}
+    >
+      {active && (
+        <motion.span
+          layoutId="login-tab"
+          transition={springSnappy}
+          className="absolute inset-0 rounded-xl border border-[var(--hairline-strong)] bg-paper/[0.08]"
+        />
+      )}
+      <span className="relative">{icon}</span>
+      <span className="relative">{children}</span>
+    </button>
+  );
+}

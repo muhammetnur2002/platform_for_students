@@ -1,0 +1,642 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import Link from 'next/link';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowLeft, ArrowRight, Check, ShieldCheck } from 'lucide-react';
+import { z } from 'zod';
+import { Logo } from '@/components/brand/Logo';
+import { Button } from '@/components/ui/Button';
+import { Chip } from '@/components/ui/Chip';
+import { SelectField, TextAreaField, TextField } from '@/components/ui/Field';
+import { useToast } from '@/components/ui/Toast';
+import { PhotoUpload } from '@/components/forms/PhotoUpload';
+import { ResumeUpload } from '@/components/forms/ResumeUpload';
+import { SkillsInput } from '@/components/forms/SkillsInput';
+import { useCurtainNav } from '@/components/motion/RouteCurtain';
+import { durations, easeOutExpo, springSoft, stepVariants } from '@/lib/motion';
+import { registrationSteps } from '@/lib/validation';
+import { cn } from '@/lib/utils';
+import { GENDERS, WEEKDAYS, WEEKDAY_LABEL, type Gender, type Weekday } from '@/lib/types';
+
+const CURRENT_YEAR = new Date().getFullYear();
+
+const STEP_META = [
+  { key: 'identity', title: 'Как вас зовут', hint: 'Так вас увидит работодатель' },
+  { key: 'photo', title: 'Добавьте фото', hint: 'Профили с фото открывают в три раза чаще' },
+  { key: 'education', title: 'Где вы учитесь', hint: 'Подбираем вакансии рядом с вузом' },
+  { key: 'schedule', title: 'Когда можете работать', hint: 'Главный фильтр подбора' },
+  { key: 'skills', title: 'Что вы умеете', hint: 'Навыки поднимают вакансии в ленте' },
+  { key: 'account', title: 'Вход и согласие', hint: 'Последний шаг' },
+] as const;
+
+const HOURS_OPTIONS = [8, 12, 16, 20, 24, 30, 40];
+
+const GENDER_LABEL: Record<Gender, string> = {
+  FEMALE: 'Женский',
+  MALE: 'Мужской',
+  UNSPECIFIED: 'Не указывать',
+};
+
+interface FormState {
+  fullName: string;
+  gender: Gender;
+  birthYear: number;
+  photoUrl: string | null;
+  university: string;
+  speciality: string;
+  studyYear: number;
+  city: string;
+  workDays: Weekday[];
+  hoursPerWeek: number | null;
+  skills: string[];
+  about: string;
+  resumeUrl: string | null;
+  resumeName: string | null;
+  email: string;
+  password: string;
+  phone: string;
+  consent: boolean;
+}
+
+const INITIAL: FormState = {
+  fullName: '',
+  gender: 'UNSPECIFIED',
+  birthYear: CURRENT_YEAR - 19,
+  photoUrl: null,
+  university: '',
+  speciality: '',
+  studyYear: 1,
+  city: 'Москва',
+  workDays: [],
+  hoursPerWeek: 20,
+  skills: [],
+  about: '',
+  resumeUrl: null,
+  resumeName: null,
+  email: '',
+  password: '',
+  phone: '',
+  consent: false,
+};
+
+/**
+ * Мастер регистрации.
+ *
+ * Шесть коротких шагов вместо одной длинной формы: студент заполняет её
+ * с телефона между парами, и полотно из четырнадцати полей закрывают, не
+ * начав. Каждый шаг проверяется своей схемой — той же, что и на сервере,
+ * поэтому «прошло на клиенте, отвергнуто сервером» здесь невозможно.
+ *
+ * Направление анимации зависит от того, куда идём: вперёд контент
+ * приезжает справа, назад — слева. Это единственное, что подсказывает,
+ * что шаги лежат на одной оси, а не подменяют друг друга.
+ */
+export function RegistrationWizard() {
+  const toast = useToast();
+  const navigate = useCurtainNav();
+
+  const [step, setStep] = useState(0);
+  const [direction, setDirection] = useState(1);
+  const [form, setForm] = useState<FormState>(INITIAL);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const meta = STEP_META[step];
+  const isLast = step === STEP_META.length - 1;
+
+  const patch = (values: Partial<FormState>) => {
+    setForm((current) => ({ ...current, ...values }));
+    // Ошибка снимается при первом же исправлении, а не по кнопке «Далее»:
+    // держать красное поле, которое человек уже починил, — бессмысленно
+    setErrors((current) => {
+      if (Object.keys(current).length === 0) return current;
+      const next = { ...current };
+      for (const key of Object.keys(values)) delete next[key];
+      return next;
+    });
+  };
+
+  const stepPayload = useMemo(() => {
+    switch (meta.key) {
+      case 'identity':
+        return { fullName: form.fullName, gender: form.gender, birthYear: form.birthYear };
+      case 'photo':
+        return { photoUrl: form.photoUrl };
+      case 'education':
+        return {
+          university: form.university,
+          speciality: form.speciality,
+          studyYear: form.studyYear,
+          city: form.city || null,
+        };
+      case 'schedule':
+        return { workDays: form.workDays, hoursPerWeek: form.hoursPerWeek };
+      case 'skills':
+        return {
+          skills: form.skills,
+          about: form.about || null,
+          resumeUrl: form.resumeUrl,
+          resumeName: form.resumeName,
+        };
+      case 'account':
+        return {
+          email: form.email,
+          password: form.password,
+          phone: form.phone,
+          consent: form.consent,
+        };
+    }
+  }, [form, meta.key]);
+
+  function validate(): boolean {
+    const schema = registrationSteps[meta.key] as z.ZodTypeAny;
+    const result = schema.safeParse(stepPayload);
+    if (result.success) {
+      setErrors({});
+      return true;
+    }
+    const next: Record<string, string> = {};
+    for (const issue of result.error.issues) {
+      const key = issue.path.join('.') || '_';
+      if (!next[key]) next[key] = issue.message;
+    }
+    setErrors(next);
+    return false;
+  }
+
+  function goNext() {
+    if (!validate()) return;
+    if (!isLast) {
+      setDirection(1);
+      setStep((s) => s + 1);
+      return;
+    }
+    void submit();
+  }
+
+  function goBack() {
+    setDirection(-1);
+    setErrors({});
+    setStep((s) => Math.max(0, s - 1));
+  }
+
+  async function submit() {
+    setSubmitting(true);
+    try {
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          city: form.city || null,
+          about: form.about || null,
+        }),
+      });
+      const data = (await response.json()) as {
+        redirectTo?: string;
+        error?: string;
+        fields?: Record<string, string>;
+      };
+
+      if (!response.ok) {
+        if (data.fields) setErrors(data.fields);
+        toast.error(data.error ?? 'Не удалось создать профиль');
+        return;
+      }
+
+      setDone(true);
+      // Пауза ради галочки: она подтверждает, что данные приняты,
+      // и отделяет форму от ленты
+      setTimeout(() => navigate(data.redirectTo ?? '/feed'), 1250);
+    } catch {
+      toast.error('Сеть недоступна', 'Проверьте соединение и попробуйте ещё раз');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-dvh flex-col">
+      <header className="page-x mx-auto flex h-[var(--header-h)] w-full max-w-2xl items-center justify-between">
+        <Logo href="/" />
+        <span className="text-[12.5px] tabular-nums text-paper-faint">
+          Шаг {step + 1} из {STEP_META.length}
+        </span>
+      </header>
+
+      <div className="page-x mx-auto w-full max-w-2xl">
+        <div className="h-[3px] w-full overflow-hidden rounded-full bg-paper/[0.07]">
+          <motion.div
+            className="h-full rounded-full bg-gradient-to-r from-accent-500 to-accent-200"
+            initial={false}
+            animate={{ scaleX: (step + 1) / STEP_META.length }}
+            style={{ transformOrigin: 'left' }}
+            transition={springSoft}
+          />
+        </div>
+      </div>
+
+      <main className="page-x mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center pb-12 pt-10">
+        <AnimatePresence mode="wait" custom={direction} initial={false}>
+          {done ? (
+            <SuccessState key="done" name={form.fullName} />
+          ) : (
+            <motion.section
+              key={meta.key}
+              custom={direction}
+              variants={stepVariants}
+              initial="hidden"
+              animate="show"
+              exit="exit"
+              className="min-h-[26rem]"
+            >
+              <motion.h1
+                variants={stepVariants}
+                className="text-display-md text-paper"
+              >
+                {meta.title}
+              </motion.h1>
+              <p className="mt-2.5 text-[14.5px] text-paper-dim">{meta.hint}</p>
+
+              <div className="mt-9">{renderStep()}</div>
+            </motion.section>
+          )}
+        </AnimatePresence>
+
+        {!done && (
+          <div className="mt-10 flex items-center justify-between gap-3">
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={goBack}
+              disabled={step === 0 || submitting}
+              icon={<ArrowLeft />}
+            >
+              Назад
+            </Button>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="lg"
+                onClick={goNext}
+                loading={submitting}
+                iconRight={isLast ? <Check /> : <ArrowRight />}
+              >
+                {isLast ? 'Создать профиль' : 'Далее'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+
+  function renderStep() {
+    switch (meta.key) {
+      case 'identity':
+        return (
+          <div className="space-y-5">
+            <TextField
+              label="Фамилия и имя"
+              autoComplete="name"
+              autoFocus
+              value={form.fullName}
+              error={errors.fullName}
+              onChange={(e) => patch({ fullName: e.target.value })}
+            />
+
+            <fieldset>
+              <legend className="mb-3 text-[12.5px] uppercase tracking-[0.12em] text-paper-faint">
+                Пол
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {GENDERS.map((gender) => (
+                  <Chip
+                    key={gender}
+                    selected={form.gender === gender}
+                    onToggle={() => patch({ gender })}
+                  >
+                    {GENDER_LABEL[gender]}
+                  </Chip>
+                ))}
+              </div>
+            </fieldset>
+
+            <SelectField
+              label="Год рождения"
+              value={String(form.birthYear)}
+              error={errors.birthYear}
+              onChange={(e) => patch({ birthYear: Number(e.target.value) })}
+              options={Array.from({ length: 27 }, (_, i) => {
+                const year = CURRENT_YEAR - 14 - i;
+                return { value: String(year), label: String(year) };
+              })}
+            />
+          </div>
+        );
+
+      case 'photo':
+        return (
+          <div className="space-y-6">
+            <PhotoUpload
+              value={form.photoUrl}
+              name={form.fullName || 'Профиль'}
+              onChange={(photoUrl) => patch({ photoUrl })}
+            />
+            <p className="text-center text-[13px] text-paper-faint">
+              Шаг можно пропустить — фото добавляется и позже.
+            </p>
+          </div>
+        );
+
+      case 'education':
+        return (
+          <div className="space-y-5">
+            <TextField
+              label="Вуз"
+              autoFocus
+              value={form.university}
+              error={errors.university}
+              onChange={(e) => patch({ university: e.target.value })}
+              hint="Например, НИУ ВШЭ"
+            />
+            <TextField
+              label="Специальность"
+              value={form.speciality}
+              error={errors.speciality}
+              onChange={(e) => patch({ speciality: e.target.value })}
+            />
+            <fieldset>
+              <legend className="mb-3 text-[12.5px] uppercase tracking-[0.12em] text-paper-faint">
+                Курс
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {[1, 2, 3, 4, 5, 6].map((year) => (
+                  <Chip
+                    key={year}
+                    selected={form.studyYear === year}
+                    onToggle={() => patch({ studyYear: year })}
+                  >
+                    {year}
+                  </Chip>
+                ))}
+              </div>
+              {errors.studyYear && (
+                <p className="pt-2 text-[12.5px] text-danger">{errors.studyYear}</p>
+              )}
+            </fieldset>
+            <TextField
+              label="Город"
+              value={form.city}
+              error={errors.city}
+              onChange={(e) => patch({ city: e.target.value })}
+            />
+          </div>
+        );
+
+      case 'schedule':
+        return (
+          <div className="space-y-8">
+            <fieldset>
+              <legend className="mb-3 text-[12.5px] uppercase tracking-[0.12em] text-paper-faint">
+                В какие дни готовы работать
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {WEEKDAYS.map((day) => (
+                  <Chip
+                    key={day}
+                    selected={form.workDays.includes(day)}
+                    onToggle={() =>
+                      patch({
+                        workDays: form.workDays.includes(day)
+                          ? form.workDays.filter((d) => d !== day)
+                          : [...form.workDays, day],
+                      })
+                    }
+                    className="min-w-[3.25rem] justify-center"
+                  >
+                    {WEEKDAY_LABEL[day]}
+                  </Chip>
+                ))}
+              </div>
+              {errors.workDays && <p className="pt-2.5 text-[12.5px] text-danger">{errors.workDays}</p>}
+            </fieldset>
+
+            <fieldset>
+              <legend className="mb-3 text-[12.5px] uppercase tracking-[0.12em] text-paper-faint">
+                Сколько часов в неделю
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {HOURS_OPTIONS.map((hours) => (
+                  <Chip
+                    key={hours}
+                    selected={form.hoursPerWeek === hours}
+                    onToggle={() => patch({ hoursPerWeek: hours })}
+                  >
+                    до {hours} ч
+                  </Chip>
+                ))}
+              </div>
+              <p className="pt-3 text-[12.5px] leading-snug text-paper-faint">
+                Вакансии с большей нагрузкой опустятся ниже в ленте, но не исчезнут.
+              </p>
+            </fieldset>
+          </div>
+        );
+
+      case 'skills':
+        return (
+          <div className="space-y-7">
+            <div>
+              <p className="mb-3 text-[12.5px] uppercase tracking-[0.12em] text-paper-faint">
+                Навыки
+              </p>
+              <SkillsInput value={form.skills} onChange={(skills) => patch({ skills })} />
+              {errors.skills && <p className="pt-2 text-[12.5px] text-danger">{errors.skills}</p>}
+            </div>
+
+            <TextAreaField
+              label="Пара слов о себе"
+              value={form.about}
+              maxCount={600}
+              error={errors.about}
+              onChange={(e) => patch({ about: e.target.value })}
+              hint="Необязательно. Что вам интересно и когда удобно выходить."
+            />
+
+            <ResumeUpload
+              value={form.resumeUrl}
+              fileName={form.resumeName}
+              onChange={(file) =>
+                patch({ resumeUrl: file?.url ?? null, resumeName: file?.name ?? null })
+              }
+            />
+          </div>
+        );
+
+      case 'account':
+        return (
+          <div className="space-y-5">
+            <TextField
+              label="Почта"
+              type="email"
+              autoComplete="email"
+              autoFocus
+              value={form.email}
+              error={errors.email}
+              onChange={(e) => patch({ email: e.target.value })}
+            />
+            <TextField
+              label="Пароль"
+              type="password"
+              autoComplete="new-password"
+              value={form.password}
+              error={errors.password}
+              hint="Минимум 8 символов, буквы и цифры"
+              onChange={(e) => patch({ password: e.target.value })}
+            />
+            <TextField
+              label="Телефон"
+              type="tel"
+              autoComplete="tel"
+              value={form.phone}
+              error={errors.phone}
+              hint="Необязательно. Виден только тем, кому вы откликнулись."
+              onChange={(e) => patch({ phone: e.target.value })}
+            />
+
+            <ConsentBox
+              checked={form.consent}
+              error={errors.consent}
+              onToggle={() => patch({ consent: !form.consent })}
+            />
+          </div>
+        );
+    }
+  }
+}
+
+function ConsentBox({
+  checked,
+  error,
+  onToggle,
+}: {
+  checked: boolean;
+  error?: string;
+  onToggle: () => void;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={checked}
+        onClick={onToggle}
+        className={cn(
+          'flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition-colors duration-300',
+          checked
+            ? 'border-accent-400/50 bg-accent-500/[0.09]'
+            : error
+              ? 'border-danger/50 bg-danger/[0.05]'
+              : 'border-[var(--hairline)] bg-graphite-900/45 hover:border-paper/22',
+        )}
+      >
+        <motion.span
+          animate={{
+            backgroundColor: checked ? 'rgba(110,136,162,0.9)' : 'rgba(248,248,248,0.06)',
+            borderColor: checked ? 'rgba(141,163,185,0.9)' : 'rgba(248,248,248,0.18)',
+          }}
+          transition={{ duration: durations.micro }}
+          className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border"
+        >
+          <motion.span
+            initial={false}
+            animate={{ scale: checked ? 1 : 0, opacity: checked ? 1 : 0 }}
+            transition={springSoft}
+          >
+            <Check className="size-3.5 text-ink" strokeWidth={3} />
+          </motion.span>
+        </motion.span>
+
+        <span className="text-[13px] leading-relaxed text-paper-dim">
+          Я согласен на обработку персональных данных: ФИО, контакты, сведения об образовании и
+          резюме передаются работодателям, которым я откликнулся. Данные хранятся в зашифрованном
+          виде, согласие можно отозвать в профиле.
+        </span>
+      </button>
+
+      <AnimatePresence>
+        {error && (
+          <motion.p
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden pl-1 pt-2 text-[12.5px] text-danger"
+          >
+            {error}
+          </motion.p>
+        )}
+      </AnimatePresence>
+
+      <p className="mt-3 flex items-center gap-1.5 pl-1 text-[12px] text-paper-faint">
+        <ShieldCheck className="size-3.5 shrink-0 text-accent-400" aria-hidden />
+        Шифрование AES-256, доступ по ролям, журнал обращений к данным
+      </p>
+    </div>
+  );
+}
+
+
+function SuccessState({ name }: { name: string }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: durations.base, ease: easeOutExpo }}
+      className="flex flex-1 flex-col items-center justify-center py-16 text-center"
+    >
+      <motion.svg
+        viewBox="0 0 64 64"
+        className="size-20 text-yes-glow"
+        fill="none"
+        initial="hidden"
+        animate="show"
+      >
+        <motion.circle
+          cx="32"
+          cy="32"
+          r="29"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          opacity={0.35}
+          variants={{ hidden: { pathLength: 0 }, show: { pathLength: 1 } }}
+          transition={{ duration: 0.7, ease: easeOutExpo }}
+        />
+        <motion.path
+          d="M20 33.5 L28.5 42 L45 24"
+          stroke="currentColor"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          variants={{ hidden: { pathLength: 0 }, show: { pathLength: 1 } }}
+          transition={{ duration: 0.5, ease: easeOutExpo, delay: 0.35 }}
+        />
+      </motion.svg>
+
+      <h2 className="mt-8 text-display-sm text-paper">Профиль создан</h2>
+      <p className="mt-3 max-w-[36ch] text-[15px] leading-relaxed text-paper-dim">
+        {name ? `${name.split(' ')[0]}, п` : 'П'}одборка уже собирается под ваш график. Сейчас
+        откроем ленту.
+      </p>
+      <Link
+        href="/feed"
+        className="mt-6 text-[13px] text-paper-faint underline-offset-4 transition-colors hover:text-paper hover:underline"
+      >
+        Перейти сразу
+      </Link>
+    </motion.div>
+  );
+}

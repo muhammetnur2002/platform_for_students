@@ -1,0 +1,236 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Атмосфера.
+ *
+ * Полотно — чистый чёрный. Чтобы оно не читалось как «выключенный экран»,
+ * поверх него лежат два незаметных слоя: холодное свечение сверху (источник
+ * света, от которого стёкла получают блик) и плёночное зерно. Оба почти
+ * не видны по отдельности, но без них тёмная тема выглядит плоской.
+ */
+
+@layer base {
+  :root {
+    --page-gutter: clamp(1.25rem, 4vw, 3.5rem);
+    --header-h: 4.5rem;
+    --glass-tint: rgba(30, 33, 36, 0.55);
+    --hairline: rgba(248, 248, 248, 0.09);
+    --hairline-strong: rgba(248, 248, 248, 0.16);
+  }
+
+  * {
+    border-color: var(--hairline);
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-ink text-paper font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+    font-variant-numeric: tabular-nums;
+    /* Свайп по карточке не должен утаскивать страницу */
+    overscroll-behavior-y: none;
+  }
+
+  ::selection {
+    background: rgba(84, 110, 136, 0.4);
+    color: #f8f8f8;
+  }
+
+  /* Тонкий скроллбар в тон полотну — дефолтный светлый рвёт тёмную тему */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(248, 248, 248, 0.14) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(248, 248, 248, 0.14);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(248, 248, 248, 0.24);
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px #000,
+      0 0 0 4px rgba(110, 136, 162, 0.75);
+    border-radius: inherit;
+  }
+
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgba(248, 248, 248, 0.3);
+  }
+
+  /* Автозаполнение Chrome заливает поле белым — возвращаем стекло */
+  input:-webkit-autofill,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #f8f8f8;
+    -webkit-box-shadow: 0 0 0 1000px #1e2124 inset;
+    caret-color: #f8f8f8;
+  }
+}
+
+@layer components {
+  /* Стекло: подложка + внутренний блик сверху + волосяная граница.
+     Блик обязателен — без него панель выглядит наклейкой, а не объёмом. */
+  .glass {
+    background: var(--glass-tint);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border: 1px solid var(--hairline);
+    box-shadow:
+      inset 0 1px 0 0 rgba(248, 248, 248, 0.07),
+      0 2px 6px -1px rgba(0, 0, 0, 0.7),
+      0 28px 64px -24px rgba(0, 0, 0, 0.95);
+  }
+
+  /* Карточка в стопке. Плотнее обычного стекла намеренно: сквозь 55%
+     прозрачности видно следующую карточку, и заголовки накладываются
+     друг на друга. Размытие фона остаётся — стекло, но матовое. */
+  .glass-card {
+    background: linear-gradient(180deg, rgba(24, 27, 30, 0.97), rgba(11, 12, 13, 0.985));
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+    border: 1px solid var(--hairline);
+    box-shadow:
+      inset 0 1px 0 0 rgba(248, 248, 248, 0.07),
+      0 2px 6px -1px rgba(0, 0, 0, 0.7),
+      0 28px 64px -24px rgba(0, 0, 0, 0.95);
+  }
+
+  /* Матовая поверхность для списков.
+     Выглядит как стекло, но без backdrop-filter: под строкой списка всё
+     равно ровный чёрный фон, размывать там нечего — а полсотни слоёв с
+     размытием подложки роняют прокрутку. Настоящее стекло остаётся там,
+     где сквозь него что-то видно: шапка, шторка, карточка свайпа. */
+  .surface {
+    background: linear-gradient(180deg, rgba(26, 29, 32, 0.92), rgba(17, 19, 21, 0.92));
+    border: 1px solid var(--hairline);
+    box-shadow:
+      inset 0 1px 0 0 rgba(248, 248, 248, 0.06),
+      0 2px 6px -1px rgba(0, 0, 0, 0.6),
+      0 24px 56px -28px rgba(0, 0, 0, 0.9);
+  }
+
+  .glass-soft {
+    background: rgba(24, 26, 28, 0.5);
+    backdrop-filter: blur(18px) saturate(130%);
+    -webkit-backdrop-filter: blur(18px) saturate(130%);
+    border: 1px solid var(--hairline);
+  }
+
+  /* Разделитель, растворяющийся к краям: сплошная линия во всю ширину
+     режет композицию пополам */
+  .hairline-x {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(248, 248, 248, 0.12) 15%,
+      rgba(248, 248, 248, 0.12) 85%,
+      transparent
+    );
+  }
+
+  .text-gradient {
+    background: linear-gradient(180deg, #f8f8f8 0%, rgba(248, 248, 248, 0.62) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(248, 248, 248, 0.08) 45%,
+      rgba(248, 248, 248, 0.13) 50%,
+      rgba(248, 248, 248, 0.08) 55%,
+      transparent
+    );
+    animation: shimmer 1.8s infinite;
+  }
+
+  .grain::before {
+    content: '';
+    position: fixed;
+    inset: -50%;
+    pointer-events: none;
+    z-index: 60;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
+
+@layer utilities {
+  .page-x {
+    padding-left: var(--page-gutter);
+    padding-right: var(--page-gutter);
+  }
+
+  /* Маска для построчного/пословного раскрытия текста */
+  .mask-reveal {
+    display: inline-block;
+    overflow: hidden;
+    vertical-align: bottom;
+  }
+
+  .fade-edges-y {
+    -webkit-mask-image: linear-gradient(180deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+    mask-image: linear-gradient(180deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Свайп-карточка не должна конкурировать с нативным скроллом по X */
+  .touch-pan-y-only {
+    touch-action: pan-y;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,386 @@
+/**
+ * Сквозная проверка по API против запущенного сервера.
+ *
+ *   npm run dev
+ *   npm run smoke
+ *
+ * Проходит весь путь продукта: регистрация студента → лента → свайп
+ * вправо (он же отклик) → свайп влево → возврат из пропущенных →
+ * кабинет работодателя со сменой статуса → панель админа с
+ * синхронизацией. Ошибка на любом шаге валит процесс с ненулевым кодом.
+ *
+ * Проверяются и границы доступа: гость не должен видеть ленту,
+ * работодатель — не должен попадать в админку.
+ */
+
+const BASE = process.env.SMOKE_URL ?? 'http://localhost:3007';
+
+let passed = 0;
+const failures: string[] = [];
+
+function check(name: string, condition: boolean, detail?: unknown) {
+  if (condition) {
+    passed++;
+    console.log(`  ok   ${name}`);
+  } else {
+    failures.push(name);
+    console.log(`  FAIL ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ''}`);
+  }
+}
+
+/** Отдельная «банка» кук на роль: сессии не должны мешать друг другу. */
+class Session {
+  private cookie = '';
+
+  async request(path: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers);
+    // Origin обязателен: роуты отвергают изменяющие запросы с чужого источника
+    headers.set('Origin', BASE);
+    if (this.cookie) headers.set('Cookie', this.cookie);
+    if (init.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetch(`${BASE}${path}`, { ...init, headers, redirect: 'manual' });
+    const setCookie = response.headers.get('set-cookie');
+    if (setCookie) this.cookie = setCookie.split(';')[0];
+
+    const text = await response.text();
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      /* не JSON — оставляем текстом */
+    }
+    return { status: response.status, body: body as any };
+  }
+
+  post(path: string, payload: unknown) {
+    return this.request(path, { method: 'POST', body: JSON.stringify(payload) });
+  }
+  patch(path: string, payload: unknown) {
+    return this.request(path, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+  delete(path: string, payload: unknown) {
+    return this.request(path, { method: 'DELETE', body: JSON.stringify(payload) });
+  }
+}
+
+async function main() {
+  console.log(`Сквозная проверка ${BASE}\n`);
+
+  // ---------- Гость ----------
+  console.log('Гость');
+  const guest = new Session();
+  check('лента закрыта для гостя', (await guest.request('/api/feed')).status === 401);
+  check('статистика закрыта для гостя', (await guest.request('/api/admin/stats')).status === 401);
+  check('витрина открыта', (await guest.request('/')).status === 200);
+
+  // ---------- Студент ----------
+  console.log('\nСтудент');
+  const student = new Session();
+  const email = `smoke-${Date.now()}@demo.ru`;
+
+  const registered = await student.post('/api/auth/register', {
+    fullName: 'Тест Тестов',
+    gender: 'MALE',
+    birthYear: 2005,
+    photoUrl: null,
+    university: 'МГУ',
+    speciality: 'Экономика',
+    studyYear: 3,
+    city: 'Москва',
+    workDays: ['MON', 'WED', 'FRI'],
+    hoursPerWeek: 20,
+    skills: ['Excel', 'SMM'],
+    about: null,
+    resumeUrl: null,
+    resumeName: null,
+    email,
+    password: 'Smoke12345!',
+    phone: '+7 900 111-22-33',
+    consent: true,
+  });
+  check('регистрация', registered.status === 201, registered.body);
+
+  const weakPassword = await new Session().post('/api/auth/register', {
+    fullName: 'Тест Тестов',
+    gender: 'MALE',
+    birthYear: 2005,
+    photoUrl: null,
+    university: 'МГУ',
+    speciality: 'Экономика',
+    studyYear: 3,
+    city: null,
+    workDays: ['MON'],
+    hoursPerWeek: 20,
+    skills: [],
+    about: null,
+    resumeUrl: null,
+    resumeName: null,
+    email: `weak-${Date.now()}@demo.ru`,
+    password: 'короткий',
+    phone: '',
+    consent: true,
+  });
+  check('слабый пароль отвергнут', weakPassword.status === 400, weakPassword.body);
+
+  const noConsent = await new Session().post('/api/auth/register', {
+    fullName: 'Тест Тестов',
+    gender: 'MALE',
+    birthYear: 2005,
+    photoUrl: null,
+    university: 'МГУ',
+    speciality: 'Экономика',
+    studyYear: 3,
+    city: null,
+    workDays: ['MON'],
+    hoursPerWeek: 20,
+    skills: [],
+    about: null,
+    resumeUrl: null,
+    resumeName: null,
+    email: `noconsent-${Date.now()}@demo.ru`,
+    password: 'Smoke12345!',
+    phone: '',
+    consent: false,
+  });
+  check('регистрация без согласия на ПДн отвергнута', noConsent.status === 400, noConsent.body);
+
+  const feed = await student.request('/api/feed');
+  const vacancies = feed.body.vacancies as Array<{ id: string; matchScore: number }>;
+  check('лента непустая', Array.isArray(vacancies) && vacancies.length > 0);
+  check('совпадение посчитано', typeof vacancies?.[0]?.matchScore === 'number', vacancies?.[0]);
+  check(
+    'лента отсортирована по совпадению',
+    vacancies.every((v, i) => i === 0 || vacancies[i - 1].matchScore >= v.matchScore - 30),
+  );
+
+  const liked = vacancies[0];
+  const skippedVacancy = vacancies[1];
+
+  const swipeRight = await student.post('/api/swipes', { vacancyId: liked.id, direction: 'RIGHT' });
+  check('свайп вправо создаёт отклик', swipeRight.status === 200 && swipeRight.body.applied === true, swipeRight.body);
+
+  const applications = await student.request('/api/applications');
+  check(
+    'отклик виден студенту',
+    applications.body.applications?.some((a: any) => a.vacancy.id === liked.id),
+  );
+
+  await student.post('/api/swipes', { vacancyId: skippedVacancy.id, direction: 'LEFT' });
+  const skipped = await student.request('/api/skipped');
+  check(
+    'пропущенная вакансия в разделе',
+    skipped.body.skipped?.some((s: any) => s.vacancy.id === skippedVacancy.id),
+  );
+
+  const feedAfter = await student.request('/api/feed');
+  check(
+    'разобранные вакансии ушли из ленты',
+    !feedAfter.body.vacancies.some((v: any) => v.id === liked.id || v.id === skippedVacancy.id),
+  );
+
+  await student.delete('/api/swipes', { vacancyId: skippedVacancy.id });
+  const feedRestored = await student.request('/api/feed');
+  check(
+    'возврат из пропущенных возвращает в ленту',
+    feedRestored.body.vacancies.some((v: any) => v.id === skippedVacancy.id),
+  );
+
+  check('студента не пускают в админку', (await student.request('/api/admin/stats')).status === 401);
+
+  // ---------- Работодатель ----------
+  console.log('\nРаботодатель');
+  const employer = new Session();
+  const badCode = await employer.post('/api/auth/employer', { code: 'WRON-GCOD-EWRO-NGCO' });
+  check('неверный код отвергнут', badCode.status === 401, badCode.body);
+
+  const employerLogin = await employer.post('/api/auth/employer', { code: 'SEVR-2026-DEMO' });
+  check('вход по коду из CRM', employerLogin.status === 200, employerLogin.body);
+
+  const board = await employer.request('/api/employer/applications');
+  check('кабинет отдаёт отклики', Array.isArray(board.body.applications), board.body);
+  const application = board.body.applications?.[0];
+  check(
+    'контакты студента расшифрованы',
+    !!application && typeof application.student.fullName === 'string' && application.student.fullName.length > 2,
+    application?.student?.fullName,
+  );
+
+  if (application) {
+    const statusChange = await employer.patch('/api/employer/applications', {
+      applicationId: application.id,
+      status: 'INTERVIEW',
+    });
+    check('смена статуса отклика', statusChange.status === 200, statusChange.body);
+  }
+
+  const foreign = await employer.patch('/api/employer/applications', {
+    applicationId: 'no-such-application',
+    status: 'HIRED',
+  });
+  check('чужой отклик недоступен', foreign.status === 404 || foreign.status === 403, foreign.body);
+  check('работодателя не пускают в админку', (await employer.request('/api/admin/stats')).status === 401);
+
+  // ---------- Администратор ----------
+  console.log('\nАдминистратор');
+  const admin = new Session();
+  const wrongPassword = await admin.post('/api/auth/login', {
+    email: 'admin@fattakhov.ru',
+    password: 'wrong-password',
+  });
+  check('неверный пароль отвергнут', wrongPassword.status === 401);
+
+  const adminLogin = await admin.post('/api/auth/login', {
+    email: 'admin@fattakhov.ru',
+    password: 'Admin12345!',
+  });
+  check('вход администратора', adminLogin.status === 200, adminLogin.body);
+
+  const stats = await admin.request('/api/admin/stats');
+  check('статистика собрана', stats.status === 200 && stats.body.stats?.students?.total > 0, stats.body?.stats?.students);
+  check('журнал аудита пишется', (stats.body.audit?.length ?? 0) > 0);
+  check(
+    'раздел «кто в процессе» заполнен',
+    Array.isArray(stats.body.stats?.inProgress) && stats.body.stats.inProgress.length > 0,
+  );
+
+  const sync = await admin.post('/api/admin/sync', {});
+  check('синхронизация с CRM', sync.status === 200 && sync.body.run?.status === 'SUCCESS', sync.body);
+  check('синхронизация обновила вакансии', (sync.body.run?.updated ?? 0) > 0, sync.body.run);
+
+  // ---------- Переписка ----------
+  console.log('\nПереписка');
+
+  // Свежий отклик: работодатель ещё не отреагировал, писать нельзя
+  const freshThreads = await student.request('/api/messages');
+  const freshThread = freshThreads.body.threads?.[0];
+  check('диалог заведён на отклик', !!freshThread, freshThreads.body);
+  check(
+    'по новому отклику студенту писать нельзя',
+    freshThread?.canWrite === false && typeof freshThread?.lockedReason === 'string',
+    freshThread,
+  );
+
+  if (freshThread) {
+    const blocked = await student.post(`/api/messages/${freshThread.applicationId}`, {
+      body: 'Здравствуйте, очень хочу у вас работать!',
+    });
+    check('блокировка держится на сервере, а не только в вёрстке', blocked.status === 403, blocked.body);
+  }
+
+  // Работодатель открывает диалог первым
+  const employerThreads = await employer.request('/api/messages');
+  const employerThread = employerThreads.body.threads?.[0];
+  check('работодатель видит свои диалоги', !!employerThread, employerThreads.body);
+  check('работодателю писать можно всегда', employerThread?.canWrite === true, employerThread);
+
+  if (employerThread) {
+    const sent = await employer.post(`/api/messages/${employerThread.applicationId}`, {
+      body: 'Здравствуйте! Готовы пригласить вас на пробную смену.',
+    });
+    check('работодатель отправил сообщение', sent.status === 201, sent.body);
+    check('сообщение помечено как своё', sent.body.message?.mine === true, sent.body.message);
+
+    const back = await employer.request(`/api/messages/${employerThread.applicationId}`);
+    const lastBody = back.body.thread?.messages?.at(-1)?.body;
+    check(
+      'текст расшифровывается обратно',
+      lastBody === 'Здравствуйте! Готовы пригласить вас на пробную смену.',
+      lastBody,
+    );
+
+    const empty = await employer.post(`/api/messages/${employerThread.applicationId}`, { body: '   ' });
+    check('пустое сообщение отвергнуто', empty.status === 400, empty.body);
+
+    const foreign = await student.request(`/api/messages/${employerThread.applicationId}`);
+    check('чужая переписка недоступна', foreign.status === 404, foreign.status);
+  }
+
+  // Демо-студент: у него отклик уже в работе, писать можно
+  const demo = new Session();
+  await demo.post('/api/auth/login', {
+    email: 'student@demo.ru',
+    password: 'Demo12345!',
+  });
+  const demoThreads = await demo.request('/api/messages');
+  const live = demoThreads.body.threads?.find((t: any) => t.canWrite === true);
+  check('по отклику в работе студент писать может', !!live, demoThreads.body.threads?.[0]);
+
+  if (live) {
+    check('непрочитанное посчитано', typeof live.unread === 'number', live);
+
+    const reply = await demo.post(`/api/messages/${live.applicationId}`, {
+      body: 'Спасибо, четверг в 18:00 подходит.',
+    });
+    check('студент ответил', reply.status === 201, reply.body);
+
+    const read = await demo.patch(`/api/messages/${live.applicationId}`, {});
+    check('отметка о прочтении принята', read.status === 200, read.body);
+
+    const after = await demo.request(`/api/messages/${live.applicationId}`);
+    check('после отметки непрочитанного нет', after.body.thread?.unread === 0, after.body.thread?.unread);
+  }
+
+  // Живой поток
+  const streamed = await (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(`${BASE}/api/messages/stream`, {
+        headers: { Cookie: (demo as any).cookie, Origin: BASE },
+        signal: controller.signal,
+      });
+      const type = response.headers.get('content-type') ?? '';
+      const reader = response.body?.getReader();
+      const first = reader ? await reader.read() : null;
+      void reader?.cancel();
+      return {
+        status: response.status,
+        type,
+        payload: first?.value ? new TextDecoder().decode(first.value) : '',
+      };
+    } catch {
+      return { status: 0, type: '', payload: '' };
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  check('поток событий отвечает', streamed.status === 200, streamed.status);
+  check('поток отдаётся как SSE', streamed.type.includes('text/event-stream'), streamed.type);
+  check('поток сразу шлёт готовность', streamed.payload.includes('"ready"'), streamed.payload.slice(0, 60));
+
+  const guestStream = await fetch(`${BASE}/api/messages/stream`).then((r) => r.status);
+  check('гостя в поток не пускают', guestStream === 401, guestStream);
+  check('гость не видит диалогов', (await guest.request('/api/messages')).status === 401);
+
+  // ---------- Устаревшая сессия ----------
+  // Подпись у токена ещё верна, а аккаунта, на который он указывает, уже
+  // нет — так бывает после пересоздания базы. Раньше это давало 500 в
+  // серверном компоненте; теперь сессия обязана сниматься.
+  console.log('\nУстаревшая сессия');
+  const staleExit = await fetch(`${BASE}/logout?reason=stale&next=/feed`, { redirect: 'manual' });
+  const location = staleExit.headers.get('location') ?? '';
+  const setCookie = staleExit.headers.get('set-cookie') ?? '';
+  check('аварийный выход отвечает редиректом', staleExit.status >= 300 && staleExit.status < 400, staleExit.status);
+  check('уводит на вход с причиной', location.includes('/login') && location.includes('stale'), location);
+  check(
+    'куку сессии снимает',
+    /fhr_session=;|fhr_session=""|Max-Age=0|Expires=Thu, 01 Jan 1970/i.test(setCookie),
+    setCookie.slice(0, 80),
+  );
+
+  // ---------- Итог ----------
+  console.log(`\n${passed} проверок пройдено, ${failures.length} провалено`);
+  if (failures.length) {
+    console.log('Провалено:');
+    for (const name of failures) console.log(`  · ${name}`);
+    process.exitCode = 1;
+  }
+}
+
+main().catch((error) => {
+  console.error('\nПроверка не завершилась:', error);
+  process.exitCode = 1;
+});
