@@ -15,7 +15,15 @@ const globalForStore = globalThis as unknown as { fhrStore?: Promise<DataStore> 
 
 export function getStore(): Promise<DataStore> {
   if (!globalForStore.fhrStore) {
-    globalForStore.fhrStore = build();
+    // Неудачную попытку из кеша убираем. База может быть недоступна
+    // секунду — поднимается медленнее приложения, перезапускается,
+    // теряет сеть. Сохранённый отклонённый промис пережил бы её
+    // возвращение: все последующие запросы получали бы ту же самую
+    // старую ошибку, и лечилось бы это только рестартом процесса.
+    globalForStore.fhrStore = build().catch((error: unknown) => {
+      globalForStore.fhrStore = undefined;
+      throw error;
+    });
   }
   return globalForStore.fhrStore;
 }

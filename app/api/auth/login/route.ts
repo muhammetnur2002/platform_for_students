@@ -19,9 +19,11 @@ export async function POST(request: Request) {
     const ip = clientIp(request.headers);
     const input = loginSchema.parse(await request.json());
 
-    // Лимит и по IP, и по учётной записи: первый режет перебор с одной
+    // Лимит и по IP, и по учётной записи: первый режет шквал с одной
     // машины, второй — распределённый перебор одного аккаунта.
-    const byIp = await rateLimit('login', ip);
+    // Пороги у них разные: за адресом может стоять целый кампус, а за
+    // учётной записью — ровно один человек, и защищать надо её.
+    const byIp = await rateLimit('loginIp', ip);
     if (!byIp.ok) return tooManyRequests(byIp.retryAfter);
     const emailHash = blindIndex(input.email);
     const byAccount = await rateLimit('login', `acct:${emailHash}`);

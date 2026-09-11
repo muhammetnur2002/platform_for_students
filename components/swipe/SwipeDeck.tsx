@@ -21,6 +21,17 @@ interface HistoryEntry {
 }
 
 /**
+ * Вернувшаяся карточка. `nonce` растёт на каждую отмену: одну и ту же
+ * вакансию можно вернуть несколько раз подряд, и без отметки карточка
+ * не отличит второй возврат от первого.
+ */
+interface Restored {
+  id: string;
+  from: 'left' | 'right';
+  nonce: number;
+}
+
+/**
  * Лента свайпов.
  *
  * Решение применяется сразу, запрос уходит следом: ждать ответа сервера
@@ -36,30 +47,30 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
   const [exitDir, setExitDir] = useState(1);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [detail, setDetail] = useState<VacancyDTO | null>(null);
-  const [restored, setRestored] = useState<{ id: string; from: 'left' | 'right' } | null>(null);
+  const [restored, setRestored] = useState<Restored | null>(null);
   const [counts, setCounts] = useState({ applied: 0, skipped: 0 });
   const [hintSeen, setHintSeen] = useState(false);
 
   const progress = useMotionValue(0);
   const total = useRef(initial.length);
-  const busy = useRef(false);
 
-  const decide = useCallback(
-    async (direction: SwipeDirection) => {
-      const card = cards[0];
-      if (!card || busy.current) return;
-      busy.current = true;
+  /*
+   * Очередь и история живут в ref, а состояние — их отражение для
+   * отрисовки.
+   *
+   * Решения приходят быстрее, чем React успевает перерисоваться: пока
+   * летит запрос по предыдущей карточке, человек уже смахивает
+   * следующую. Читая верхнюю карточку из состояния, оба жеста взяли бы
+   * одну и ту же — поэтому раньше второй жест приходилось отбрасывать,
+   * и смахнутая карточка оставалась лежать там, где её отпустили.
+   */
+  const queue = useRef(initial);
+  const past = useRef<HistoryEntry[]>([]);
+  const restoreSeq = useRef(0);
 
-      setExitDir(direction === 'RIGHT' ? 1 : -1);
-      setCards((current) => current.slice(1));
-      setHistory((current) => [...current, { vacancy: card, direction }]);
-      setCounts((c) =>
-        direction === 'RIGHT' ? { ...c, applied: c.applied + 1 } : { ...c, skipped: c.skipped + 1 },
-      );
-      setRestored(null);
-      setHintSeen(true);
-      progress.set(0);
-
+  /** Отправка решения. Отказ сервера возвращает карточку в колоду. */
+  const send = useCallback(
+    async (card: VacancyDTO, direction: SwipeDirection) => {
       try {
         const response = await fetch('/api/swipes', {
           method: 'POST',
@@ -74,8 +85,12 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
           router.refresh();
         }
       } catch (error) {
-        setCards((current) => [card, ...current]);
-        setHistory((current) => current.slice(0, -1));
+        // Откатываем по вакансии, а не по хвосту истории: в полёте может
+        // быть сразу несколько решений, и упасть способно любое из них
+        queue.current = [card, ...queue.current];
+        past.current = past.current.filter((entry) => entry.vacancy.id !== card.id);
+        setCards(queue.current);
+        setHistory(past.current);
         setCounts((c) =>
           direction === 'RIGHT' ? { ...c, applied: c.applied - 1 } : { ...c, skipped: c.skipped - 1 },
         );
@@ -83,41 +98,72 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
           'Не удалось сохранить решение',
           error instanceof Error && error.message ? error.message : 'Проверьте соединение',
         );
-      } finally {
-        busy.current = false;
       }
     },
-    [cards, progress, router, toast],
+    [router, toast],
   );
 
-  const undo = useCallback(async () => {
-    const last = history[history.length - 1];
-    if (!last || busy.current) return;
-    busy.current = true;
+  /**
+   * Решение по верхней карточке. Возвращает, принято ли оно: карточка
+   * блокирует себя только после согласия колоды, иначе жест, пришедший
+   * на пустую колоду, оставил бы её замершей посреди экрана.
+   */
+  const decide = useCallback(
+    (direction: SwipeDirection): boolean => {
+      const card = queue.current[0];
+      if (!card) return false;
 
-    setHistory((current) => current.slice(0, -1));
-    setCards((current) => [last.vacancy, ...current]);
-    setRestored({ id: last.vacancy.id, from: last.direction === 'RIGHT' ? 'right' : 'left' });
+      queue.current = queue.current.slice(1);
+      past.current = [...past.current, { vacancy: card, direction }];
+      setCards(queue.current);
+      setHistory(past.current);
+      setExitDir(direction === 'RIGHT' ? 1 : -1);
+      setCounts((c) =>
+        direction === 'RIGHT' ? { ...c, applied: c.applied + 1 } : { ...c, skipped: c.skipped + 1 },
+      );
+      setRestored(null);
+      setHintSeen(true);
+      progress.set(0);
+
+      void send(card, direction);
+      return true;
+    },
+    [progress, send],
+  );
+
+  const undo = useCallback(() => {
+    const last = past.current[past.current.length - 1];
+    if (!last) return;
+
+    past.current = past.current.slice(0, -1);
+    queue.current = [last.vacancy, ...queue.current];
+    setHistory(past.current);
+    setCards(queue.current);
+    setRestored({
+      id: last.vacancy.id,
+      from: last.direction === 'RIGHT' ? 'right' : 'left',
+      nonce: ++restoreSeq.current,
+    });
     setCounts((c) =>
       last.direction === 'RIGHT'
         ? { ...c, applied: Math.max(0, c.applied - 1) }
         : { ...c, skipped: Math.max(0, c.skipped - 1) },
     );
 
-    try {
-      const response = await fetch('/api/swipes', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vacancyId: last.vacancy.id }),
-      });
-      if (!response.ok) throw new Error();
-      router.refresh();
-    } catch {
-      toast.error('Не удалось отменить', 'Обновите страницу и попробуйте ещё раз');
-    } finally {
-      busy.current = false;
-    }
-  }, [history, router, toast]);
+    void (async () => {
+      try {
+        const response = await fetch('/api/swipes', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vacancyId: last.vacancy.id }),
+        });
+        if (!response.ok) throw new Error();
+        router.refresh();
+      } catch {
+        toast.error('Не удалось отменить', 'Обновите страницу и попробуйте ещё раз');
+      }
+    })();
+  }, [router, toast]);
 
   // Стрелки — полноценный способ разбирать ленту с клавиатуры, а не
   // подсказка «для доступности»: на десктопе им пользуются чаще мыши.
@@ -130,16 +176,16 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
 
       if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        void decide('LEFT');
+        decide('LEFT');
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
-        void decide('RIGHT');
+        decide('RIGHT');
       } else if (event.key === 'ArrowUp' && cards[0]) {
         event.preventDefault();
         setDetail(cards[0]);
       } else if (event.key.toLowerCase() === 'z' && history.length) {
         event.preventDefault();
-        void undo();
+        undo();
       }
     }
     window.addEventListener('keydown', onKey);
@@ -163,6 +209,7 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
               index={index}
               isTop={index === 0}
               enterFrom={restored?.id === vacancy.id ? restored.from : 'stack'}
+              entryToken={restored?.id === vacancy.id ? restored.nonce : 0}
               onDecide={decide}
               onOpen={() => setDetail(vacancy)}
               onProgress={(value) => progress.set(value)}
@@ -176,9 +223,9 @@ export function SwipeDeck({ initial }: { initial: VacancyDTO[] }) {
       <div className="mt-7 w-full max-w-[26rem]">
         <SwipeControls
           progress={progress}
-          onSkip={() => void decide('LEFT')}
-          onApply={() => void decide('RIGHT')}
-          onUndo={() => void undo()}
+          onSkip={() => decide('LEFT')}
+          onApply={() => decide('RIGHT')}
+          onUndo={undo}
           canUndo={history.length > 0}
           disabled={cards.length === 0}
         />

@@ -32,6 +32,23 @@ const local = new EventEmitter();
 local.setMaxListeners(0);
 
 let bridged = false;
+let bridgeWarned = false;
+
+/**
+ * Сообщаем о недоступном Redis один раз за процесс.
+ *
+ * Соединение переподключается по стратегии клиента и на каждой попытке
+ * шлёт «error». Без этого фильтра лог превращается в стену из одной и
+ * той же строки, в которой тонут настоящие ошибки.
+ */
+function warnBridgeDown(reason: string): void {
+  if (bridgeWarned) return;
+  bridgeWarned = true;
+  console.warn(
+    `[events] Redis недоступен (${reason || 'соединение отклонено'}) — ` +
+      'события переписки доставляются в пределах процесса',
+  );
+}
 
 function ensureBridge(): void {
   if (bridged) return;
@@ -43,7 +60,11 @@ function ensureBridge(): void {
   try {
     // Подписанное соединение не может выполнять другие команды — нужен дубль
     const sub = redis.duplicate();
-    void sub.subscribe(CHANNEL);
+
+    // Обработчик ошибок вешаем до подписки: у дубля свой поток ошибок, и
+    // соединение, оставшееся без слушателя, роняет процесс целиком.
+    sub.on('error', (err: Error) => warnBridgeDown(err.message));
+
     sub.on('message', (_channel: string, payload: string) => {
       try {
         local.emit('event', JSON.parse(payload) as ThreadEvent);
@@ -51,9 +72,14 @@ function ensureBridge(): void {
         /* битый payload не должен ронять поток */
       }
     });
-    sub.on('error', (err: Error) => console.error('[events] подписчик:', err.message));
+
+    // `.catch`, а не `void`: отклонённый промис подписки — это
+    // unhandledRejection, который в Next.js обрывает сам SSE-запрос. Но
+    // отсутствие Redis не ошибка: переписка продолжает работать через
+    // локальный эмиттер, и поток обязан открыться в любом случае.
+    sub.subscribe(CHANNEL).catch((err: Error) => warnBridgeDown(err?.message));
   } catch (err) {
-    console.error('[events] не удалось подписаться на Redis:', err);
+    warnBridgeDown(err instanceof Error ? err.message : String(err));
   }
 }
 

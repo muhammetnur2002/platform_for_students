@@ -1,18 +1,8 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
 import { Aurora } from '@/components/layout/Aurora';
 import { RouteCurtain } from '@/components/motion/RouteCurtain';
 import { ToastProvider } from '@/components/ui/Toast';
 import './globals.css';
-
-const inter = Inter({
-  subsets: ['latin', 'cyrillic'],
-  variable: '--font-sans',
-  display: 'swap',
-  // Продукт двуязычный по факту: названия компаний латиницей, интерфейс
-  // кириллицей. Без второго набора кириллица подменялась бы системным
-  // шрифтом, и заголовки «плыли» бы по ширине.
-});
 
 export const metadata: Metadata = {
   title: {
@@ -36,7 +26,16 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" className={inter.variable}>
+    <html lang="ru">
+      <head>
+        {/*
+          Два набора из четырёх грузим заранее: интерфейс кириллический,
+          названия компаний латиницей — эти встретятся на любом экране.
+          Расширенные наборы браузер возьмёт сам, если они понадобятся.
+        */}
+        <link rel="preload" href="/fonts/inter-cyrillic.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
+        <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
+      </head>
       <body className="grain min-h-dvh bg-ink text-paper">
         <Aurora />
         <ToastProvider>

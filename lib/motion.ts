@@ -88,6 +88,9 @@ export const pageVariants: Variants = {
   exit: {
     opacity: 0,
     y: -8,
+    // Уходящий экран лежит поверх приходящего, пока тает: без этого он
+    // ловит нажатия, адресованные уже новому экрану.
+    pointerEvents: 'none',
     transition: { duration: durations.fast, ease: easeInOutQuint },
   },
 };

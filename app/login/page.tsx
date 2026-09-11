@@ -12,9 +12,9 @@ export default function LoginPage() {
   // данных таких аккаунтов не существует.
   const demoHint = isDemoMode()
     ? {
-        student: `${DEMO_CREDENTIALS.student.email} / ${DEMO_CREDENTIALS.student.password}`,
-        admin: `${DEMO_CREDENTIALS.admin.email} / ${DEMO_CREDENTIALS.admin.password}`,
-        code: DEMO_CREDENTIALS.employerCode,
+        student: { ...DEMO_CREDENTIALS.student },
+        admin: { ...DEMO_CREDENTIALS.admin },
+        employerCode: DEMO_CREDENTIALS.employerCode,
       }
     : undefined;
 

@@ -45,7 +45,7 @@ export interface ButtonProps extends Omit<HTMLMotionProps<'button'>, 'children'>
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'primary', size = 'md', loading, icon, iconRight, className, children, disabled, ...props },
+  { variant = 'primary', size = 'md', loading, icon, iconRight, className, children, disabled, type = 'button', ...props },
   ref,
 ) {
   const isDisabled = disabled || loading;
@@ -53,6 +53,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   return (
     <motion.button
       ref={ref}
+      // По умолчанию button, а не submit: у голого <button> внутри формы
+      // тип submit, и кнопка «показать пароль» или «добавить навык»
+      // молча отправляла бы форму. Отправку запрашивают явно.
+      type={type}
       disabled={isDisabled}
       whileHover={isDisabled ? undefined : { y: -1.5 }}
       whileTap={isDisabled ? undefined : { scale: 0.975, y: 0 }}

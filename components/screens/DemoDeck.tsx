@@ -69,6 +69,8 @@ export function DemoDeck({ vacancies }: { vacancies: VacancyDTO[] }) {
             onDecide={(direction) => {
               setTouched(true);
               advance(direction);
+              // Витринная колода бесконечна и принимает любой жест
+              return true;
             }}
             onOpen={() => {
               setTouched(true);

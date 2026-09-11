@@ -35,7 +35,8 @@ export interface SwipeCardProps {
   /** 0 — верхняя карточка, дальше вглубь стопки */
   index: number;
   isTop: boolean;
-  onDecide: (direction: SwipeDirection) => void;
+  /** Возвращает, приняла ли колода решение */
+  onDecide: (direction: SwipeDirection) => boolean;
   onOpen: () => void;
   /** Сообщает колоде, насколько уведена верхняя карточка (−1…1) */
   onProgress?: (progress: number) => void;
@@ -45,6 +46,11 @@ export interface SwipeCardProps {
    * отправили: иначе отмена не читается как отмена.
    */
   enterFrom?: 'stack' | 'left' | 'right';
+  /**
+   * Метка возврата. Меняется на каждую отмену, в том числе повторную по
+   * той же вакансии, и служит сигналом «решение по тебе отменено».
+   */
+  entryToken?: number;
 }
 
 /**
@@ -67,6 +73,7 @@ export function SwipeCard({
   onOpen,
   onProgress,
   enterFrom = 'stack',
+  entryToken = 0,
 }: SwipeCardProps) {
   const reduced = useReducedMotion();
   // Возвращённая карточка стартует за краем экрана и приезжает на место
@@ -78,10 +85,15 @@ export function SwipeCard({
   const decided = useRef(false);
 
   useEffect(() => {
-    if (entryX !== 0) animate(x, 0, springSoft);
-    // Только на монтировании: дальше x принадлежит жесту
+    // Карточку вернули кнопкой «отменить»: снимаем замок решения и
+    // приводим её на место. Без сброса замка карточка, возвращённая до
+    // конца вылета, больше не отзывалась бы ни на один жест, а без
+    // возврата по x осталась бы лежать за краем экрана.
+    decided.current = false;
+    if (x.get() !== 0) animate(x, 0, springSoft);
+    // Вход, а не каждый кадр: дальше x принадлежит жесту
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [entryToken]);
 
   const rotate = useTransform<number, number>([x, grab], ([value, factor]) => {
     const raw = (value / 240) * SWIPE.maxRotate * factor;
@@ -117,8 +129,17 @@ export function SwipeCard({
 
     // Скорость главнее смещения: карточку могли толкнуть обратно перед отпусканием
     const sign = fast ? Math.sign(info.velocity.x) : Math.sign(info.offset.x);
+
+    // Замок ставим только после согласия колоды. Решение могут не
+    // принять — например, карточка уже ушла другим жестом; тогда её
+    // надо вернуть, иначе она замрёт там, где её отпустили, и перестанет
+    // отзываться на что-либо.
+    if (!onDecide(sign > 0 ? 'RIGHT' : 'LEFT')) {
+      animate(x, 0, springSoft);
+      onProgress?.(0);
+      return;
+    }
     decided.current = true;
-    onDecide(sign > 0 ? 'RIGHT' : 'LEFT');
   }
 
   const depth = Math.min(index, 2);

@@ -371,6 +371,73 @@ async function main() {
     setCookie.slice(0, 80),
   );
 
+  // ---------- Быстрая серия решений ----------
+  // Регрессия. Решения приходят быстрее, чем отвечает сервер: человек
+  // смахивает следующую карточку, пока летит запрос по предыдущей.
+  // Колода отбрасывала всё, что пришло в это окно, — отклик пропадал
+  // молча, а смахнутая карточка застывала посреди экрана.
+  console.log('\nБыстрая серия решений');
+  const burstFeed = await student.request('/api/feed');
+  const burst = (burstFeed.body.vacancies as Array<{ id: string }>).slice(0, 4);
+  check('в ленте есть на чём проверить серию', burst.length >= 3, burst.length);
+
+  const directions = ['RIGHT', 'LEFT', 'LEFT', 'RIGHT'] as const;
+  const burstResults = await Promise.all(
+    burst.map((v, i) => student.post('/api/swipes', { vacancyId: v.id, direction: directions[i] })),
+  );
+  check(
+    'сервер принял все решения серии',
+    burstResults.every((r) => r.status === 200),
+    burstResults.map((r) => r.status),
+  );
+
+  const afterBurst = await student.request('/api/feed');
+  const lost = burst.filter((v) =>
+    (afterBurst.body.vacancies as Array<{ id: string }>).some((f) => f.id === v.id),
+  );
+  check('ни одно решение серии не потеряно', lost.length === 0, lost.map((v) => v.id));
+
+  const burstApplied = await student.request('/api/applications');
+  const burstSkipped = await student.request('/api/skipped');
+  check(
+    'решения разошлись по разделам, а не слиплись',
+    burst
+      .slice(0, 3)
+      .every((v, i) =>
+        directions[i] === 'RIGHT'
+          ? burstApplied.body.applications?.some((a: any) => a.vacancy.id === v.id)
+          : burstSkipped.body.skipped?.some((sk: any) => sk.vacancy.id === v.id),
+      ),
+  );
+
+  // ---------- Файлы ----------
+  // Фото и резюме — персональные данные. Ссылка не должна работать сама
+  // по себе: право смотреть проверяется на каждый запрос, а чужой файл
+  // обязан быть неотличим от несуществующего, иначе по коду ответа
+  // перебором узнаётся, что у такого-то человека резюме есть.
+  console.log('\nФайлы');
+  check('гостю файл не отдают', (await guest.request('/api/files/photo/any.png')).status === 401);
+  const foreignFile = await student.request('/api/files/photo/not-mine.png');
+  check('чужой файл неотличим от несуществующего', foreignFile.status === 404, foreignFile.status);
+  const foreignResume = await employer.request('/api/files/resume/not-mine.pdf');
+  check('резюме чужого студента закрыто', foreignResume.status === 404, foreignResume.status);
+
+  // ---------- Перебор пароля ----------
+  // Порог висит на учётной записи, а не только на адресе: за одним IP
+  // сидит целый кампус, и рубить их всех из-за одного подборщика нельзя.
+  console.log('\nПеребор пароля');
+  const victim = `bruteforce-${Date.now()}@demo.ru`;
+  const attempts: number[] = [];
+  for (let i = 0; i < 9; i++) {
+    attempts.push((await new Session().post('/api/auth/login', { email: victim, password: `нет-${i}` })).status);
+  }
+  check('перебор одной учётной записи упирается в лимит', attempts.includes(429), attempts.join(','));
+  const neighbour = await new Session().post('/api/auth/login', {
+    email: 'student@demo.ru',
+    password: 'Demo12345!',
+  });
+  check('сосед по тому же адресу войти может', neighbour.status === 200, neighbour.status);
+
   // ---------- Итог ----------
   console.log(`\n${passed} проверок пройдено, ${failures.length} провалено`);
   if (failures.length) {

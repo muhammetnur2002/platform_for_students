@@ -22,7 +22,13 @@ type Mode = 'account' | 'code';
  * Разделять это на две страницы значило бы заставить человека сначала
  * угадать, кто он в этой системе.
  */
-export function LoginForm({ demoHint }: { demoHint?: { student: string; admin: string; code: string } }) {
+interface DemoHint {
+  student: { email: string; password: string };
+  admin: { email: string; password: string };
+  employerCode: string;
+}
+
+export function LoginForm({ demoHint }: { demoHint?: DemoHint }) {
   const router = useRouter();
   const params = useSearchParams();
   const toast = useToast();
@@ -34,13 +40,9 @@ export function LoginForm({ demoHint }: { demoHint?: { student: string; admin: s
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function signIn(endpoint: string, payload: Record<string, string>) {
     setPending(true);
     setError(null);
-
-    const endpoint = mode === 'account' ? '/api/auth/login' : '/api/auth/employer';
-    const payload = mode === 'account' ? { email, password } : { code };
 
     try {
       const response = await fetch(endpoint, {
@@ -64,6 +66,13 @@ export function LoginForm({ demoHint }: { demoHint?: { student: string; admin: s
     } finally {
       setPending(false);
     }
+  }
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    return mode === 'account'
+      ? signIn('/api/auth/login', { email, password })
+      : signIn('/api/auth/employer', { code });
   }
 
   return (
@@ -160,18 +169,54 @@ export function LoginForm({ demoHint }: { demoHint?: { student: string; admin: s
             </Button>
           </form>
 
+          {/* Демо-вход одной кнопкой, а не списком паролей для перепечатки:
+              скопированный из подсказки пароль тянет за собой пробел, и
+              человек видит «неверная почта или пароль» при верных данных.
+              Показывать сами доступы всё равно полезно — но вводить их
+              вручную больше не нужно. */}
           {demoHint && (
-            <div className="mt-6 space-y-1.5 rounded-2xl border border-[var(--hairline)] bg-graphite-950/50 p-4 text-[12px] leading-relaxed text-paper-faint">
-              <p className="text-paper/70">Демо-доступы</p>
-              <p>
-                Студент: <code className="text-accent-200">{demoHint.student}</code>
-              </p>
-              <p>
-                HR-менеджер: <code className="text-accent-200">{demoHint.admin}</code>
-              </p>
-              <p>
-                Работодатель: <code className="text-accent-200">{demoHint.code}</code>
-              </p>
+            <div className="mt-6 rounded-2xl border border-[var(--hairline)] bg-graphite-950/50 p-4">
+              <p className="text-[12px] text-paper/70">Демо-режим — войти одним нажатием</p>
+              <div className="mt-3 grid gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => signIn('/api/auth/login', demoHint.student)}
+                >
+                  Студент — Алиса Ковалёва
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => signIn('/api/auth/employer', { code: demoHint.employerCode })}
+                >
+                  Работодатель — Кофейни «Север»
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => signIn('/api/auth/login', demoHint.admin)}
+                >
+                  HR-менеджер агентства
+                </Button>
+              </div>
+              <div className="mt-3 space-y-1 text-[11.5px] leading-relaxed text-paper-faint">
+                <p>
+                  Студент: <code className="text-accent-200">{demoHint.student.email}</code> ·{' '}
+                  <code className="text-accent-200">{demoHint.student.password}</code>
+                </p>
+                <p>
+                  HR-менеджер: <code className="text-accent-200">{demoHint.admin.email}</code> ·{' '}
+                  <code className="text-accent-200">{demoHint.admin.password}</code>
+                </p>
+                <p>
+                  Код работодателя: <code className="text-accent-200">{demoHint.employerCode}</code>
+                </p>
+                <p className="pt-1">Данные живут до перезапуска сервера.</p>
+              </div>
             </div>
           )}
         </div>
